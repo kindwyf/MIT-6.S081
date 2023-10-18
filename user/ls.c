@@ -3,6 +3,9 @@
 #include "user/user.h"
 #include "kernel/fs.h"
 
+// 找到最后一个/后的文件名并格式化
+// 例如char* path = "/home/wyf"
+// fmtname(path) = "wyf    "
 char*
 fmtname(char *path)
 {
@@ -35,6 +38,7 @@ ls(char *path)
     return;
   }
 
+  // 可以获得一个已存在文件的模式，并将此模式赋值给它的副本
   if(fstat(fd, &st) < 0){
     fprintf(2, "ls: cannot stat %s\n", path);
     close(fd);
@@ -42,11 +46,11 @@ ls(char *path)
   }
 
   switch(st.type){
-  case T_FILE:
+  case T_FILE:      // 是文件
     printf("%s %d %d %l\n", fmtname(path), st.type, st.ino, st.size);
     break;
 
-  case T_DIR:
+  case T_DIR:       // 是目录
     if(strlen(path) + 1 + DIRSIZ + 1 > sizeof buf){
       printf("ls: path too long\n");
       break;
