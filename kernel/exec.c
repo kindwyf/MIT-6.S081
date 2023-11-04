@@ -64,9 +64,6 @@ exec(char *path, char **argv)
   p = myproc();
   uint64 oldsz = p->sz;
 
-  if(p->pid == 1)
-    vmprint(p->pagetable);
-
   // Allocate two pages at the next page boundary.
   // Use the second as the user stack.
   sz = PGROUNDUP(sz);
@@ -123,6 +120,9 @@ exec(char *path, char **argv)
   if(u2kvmcopy(p->pagetable, p->kpagetable, 0, p->sz) < 0){
       goto bad;
   }
+
+  if(p->pid == 1)
+    vmprint(p->pagetable);
 
   return argc; // this ends up in a0, the first argument to main(argc, argv)
 
