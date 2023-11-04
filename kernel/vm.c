@@ -126,13 +126,13 @@ kvmmap(uint64 va, uint64 pa, uint64 sz, int perm)
 // addresses on the stack.
 // assumes va is page aligned.
 uint64
-kvmpa(uint64 va)
+kvmpa(pagetable_t pagetable, uint64 va)
 {
   uint64 off = va % PGSIZE;
   pte_t *pte;
   uint64 pa;
   
-  pte = walk(kernel_pagetable, va, 0);
+  pte = walk(pagetable, va, 0);
   if(pte == 0)
     panic("kvmpa");
   if((*pte & PTE_V) == 0)
@@ -439,4 +439,69 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+void h_vmprint(pagetable_t pagetable, int level){
+  for(int i=0;i<512;i++){
+    pte_t pte = pagetable[i];
+    uint64 pa = PTE2PA(pte);
+    if((pte & PTE_V)&&(pte & (PTE_R | PTE_W | PTE_X)) == 0){
+      for(int j=0; j<level; j++){
+        printf("..");
+      if((j+1)<level)
+        printf(" ");
+      }
+      printf("%d: pte %p pa %p\n", i, pte, pa);
+      h_vmprint((pagetable_t)pa, level+1);
+    }
+    else if(pte & PTE_V){
+      printf(".. .. ..%d: pte %p pa %p\n", i, pte, pa);
+    }
+  }
+}
+
+void vmprint(pagetable_t pagetable){
+  printf("page table %p\n", pagetable);
+  h_vmprint(pagetable, 1);
+}
+
+void uvmmap(pagetable_t pagetable, uint64 va, uint64 pa, uint64 sz, int perm){
+  if(mappages(pagetable, va, sz, pa, perm) != 0)
+    panic("uvmmap");
+}
+
+pagetable_t proc_kpagetable(struct proc* p){
+  pagetable_t kpagetable = uvmcreate();
+  if(kpagetable == 0)
+    return 0;
+  uvmmap(kpagetable, UART0, UART0, PGSIZE, PTE_R | PTE_W);
+  uvmmap(kpagetable, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
+  uvmmap(kpagetable, CLINT, CLINT, 0x10000, PTE_R | PTE_W);
+  uvmmap(kpagetable, PLIC, PLIC, 0x400000, PTE_R | PTE_W);
+  uvmmap(kpagetable, KERNBASE, KERNBASE, (uint64)etext-KERNBASE, PTE_R | PTE_X);
+  uvmmap(kpagetable, (uint64)etext, (uint64)etext, PHYSTOP-(uint64)etext, PTE_R | PTE_W);
+  uvmmap(kpagetable, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X); 
+  return kpagetable;
+}
+
+int u2kvmcopy(pagetable_t upagetable, pagetable_t kpagetable, uint64 begin, uint64 sz){
+  pte_t* pte;
+  uint64 pa, i;
+  uint flags;
+  uint64 begin_page = PGROUNDUP(begin);
+  for(i=begin_page;i<sz;i+=PGSIZE){
+    if((pte = walk(upagetable, i, 0)) == 0)
+      panic("uvmcopy2kvm: pte should exist");
+    if((*pte & PTE_V) == 0)
+      panic("uvmcopy2kvm: page not present");
+    pa = PTE2PA(*pte);
+    flags = PTE_FLAGS(*pte) & (~PTE_U);
+    if(mappages(kpagetable, i, PGSIZE, pa, flags) != 0)
+      goto err;
+  }
+  return 0;
+
+err:
+  uvmunmap(kpagetable, begin_page, (i-begin_page)/PGSIZE, 0);
+  return -1;
 }

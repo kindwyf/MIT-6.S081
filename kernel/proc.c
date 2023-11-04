@@ -34,12 +34,12 @@ procinit(void)
       // Allocate a page for the process's kernel stack.
       // Map it high in memory, followed by an invalid
       // guard page.
-      char *pa = kalloc();
-      if(pa == 0)
-        panic("kalloc");
-      uint64 va = KSTACK((int) (p - proc));
-      kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
-      p->kstack = va;
+      // char *pa = kalloc();
+      // if(pa == 0)
+      //   panic("kalloc");
+      // uint64 va = KSTACK((int) (p - proc));
+      // kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+      // p->kstack = va;
   }
   kvminithart();
 }
@@ -120,6 +120,19 @@ found:
     release(&p->lock);
     return 0;
   }
+  p->kpagetable = proc_kpagetable(p);
+  if(p->kpagetable == 0){
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+
+  char* pa = kalloc();
+  if(pa == 0)
+    panic("kalloc");
+  uint64 va = KSTACK(0);
+  uvmmap(p->kpagetable, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+  p->kstack = va; 
 
   // Set up new context to start executing at forkret,
   // which returns to user space.
@@ -130,6 +143,25 @@ found:
   return p;
 }
 
+// free kernel page table without freeing physical memory - lab3-2
+void proc_freekpagetable(pagetable_t kpagetable) {
+    for(int i = 0; i < 512; i++){
+        pte_t pte = kpagetable[i];
+        if((pte & PTE_V)){
+            kpagetable[i] = 0;    // 对于有效的PTE都清零
+            // 递归清除
+            if ((pte & (PTE_R|PTE_W|PTE_X)) == 0) {
+                uint64 child = PTE2PA(pte);
+                proc_freekpagetable((pagetable_t)child);
+            }
+        }
+    }
+    kfree((void*)kpagetable);
+}
+
+// free a proc structure and the data hanging from it,
+// including user pages.
+// p->lock must be held.
 // free a proc structure and the data hanging from it,
 // including user pages.
 // p->lock must be held.
@@ -149,8 +181,19 @@ freeproc(struct proc *p)
   p->chan = 0;
   p->killed = 0;
   p->xstate = 0;
+  // free kernel stack - lab3-2
+  if(p->kstack) {
+    uvmunmap(p->kpagetable, p->kstack, 1, 1);
+  }
+  p->kstack = 0;
+  // free kernel page table without freeing physical memory - lab3-2
+  if(p->kpagetable){
+    proc_freekpagetable(p->kpagetable);
+  }
+  p->kpagetable=0;
   p->state = UNUSED;
 }
+
 
 // Create a user page table for a given process,
 // with no user memory, but with trampoline pages.
@@ -246,8 +289,15 @@ growproc(int n)
     if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
       return -1;
     }
+    if(u2kvmcopy(p->pagetable, p->kpagetable, p->sz, sz) < 0){
+      return -1;
+    }
   } else if(n < 0){
     sz = uvmdealloc(p->pagetable, sz, sz + n);
+    if (PGROUNDUP(sz) < PGROUNDUP(p->sz)) {
+      uvmunmap(p->kpagetable, PGROUNDUP(sz),
+               (PGROUNDUP(p->sz) - PGROUNDUP(sz)) / PGSIZE, 0);
+    }
   }
   p->sz = sz;
   return 0;
@@ -274,6 +324,12 @@ fork(void)
     return -1;
   }
   np->sz = p->sz;
+
+  if(u2kvmcopy(np->pagetable, np->kpagetable, 0, p->sz) < 0){
+    freeproc(np);
+    release(&np->lock);
+    return -1;
+  }
 
   np->parent = p;
 
@@ -473,6 +529,8 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+        w_satp(MAKE_SATP(p->kpagetable));
+        sfence_vma();
         swtch(&c->context, &p->context);
 
         // Process is done running for now.
@@ -483,6 +541,8 @@ scheduler(void)
       }
       release(&p->lock);
     }
+    if(found==0)
+      kvminithart();
 #if !defined (LAB_FS)
     if(found == 0) {
       intr_on();
