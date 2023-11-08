@@ -121,6 +121,7 @@ panic(char *s)
   printf("panic: ");
   printf(s);
   printf("\n");
+  backtrace();
   panicked = 1; // freeze uart output from other CPUs
   for(;;)
     ;
@@ -131,4 +132,17 @@ printfinit(void)
 {
   initlock(&pr.lock, "pr");
   pr.locking = 1;
+}
+
+void
+backtrace(void)
+{
+  uint64 fp = r_fp(); // 获取当前函数的帧指针，即第一个栈帧，是它开始调用别的函数
+  uint64 bottom = PGROUNDDOWN(fp); // 获取整个栈的最低地址
+  uint64 top = PGROUNDUP(fp); // 获取整个栈的最高地址
+  printf("backtrance:\n");
+  while(fp >= bottom && fp < top){
+    printf("%p\n", *((uint64*)(fp-8)));
+    fp = *((uint64*)(fp-16));
+  }
 }
