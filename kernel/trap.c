@@ -70,33 +70,42 @@ usertrap(void)
   } else if (r_scause() == 13 || r_scause() == 15) 
   {
     uint64 va = r_stval();
-    if(va < p->sz){
-      va = PGROUNDDOWN(va);
-      uint64 ka = (uint64)kalloc();
-      if(ka == 0){
-        p->killed = 1;
-        printf("no memory");
-      }
-      else {
-        memset((void*)ka, 0, PGSIZE);
-        if(mappages(p->pagetable, va, PGSIZE, ka, PTE_W|PTE_R|PTE_U) != 0){
-          printf("mappages failed");
-          kfree((void *)ka);
-          p->killed = 1;
-        }
-      }
-    }
-    else{
-      printf("va is wrong");
+    if(va >= p->sz){
+       printf("usertrap(): invalid va=%p higher than p->sz=%p\n",
+             va, p->sz);
       p->killed = 1;
+      goto end;
+    }
+    if(va < PGROUNDUP(p->trapframe->sp)){
+      printf("usertrap(): invalid va=%p below the user stack sp=%p\n",
+             va, p->trapframe->sp);
+      p->killed = 1;
+      goto end;
+    }
+    uint64 ka = (uint64)kalloc();
+    if(ka == 0){
+      p->killed = 1;
+      printf("usertrap(): kalloc() failed\n");
+      goto end;
+    }
+    else {
+      memset((void*)ka, 0, PGSIZE);
+      if(mappages(p->pagetable, PGROUNDDOWN(va), PGSIZE, ka, PTE_W|PTE_R|PTE_U) != 0){
+        printf("mappages failed");
+        kfree((void *)ka);
+        p->killed = 1;
+        goto end;
+      }
     }
   } 
   else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;
+    goto end;
   }
 
+end:
   if(p->killed)
     exit(-1);
 
