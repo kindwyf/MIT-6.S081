@@ -21,12 +21,16 @@ struct run {
 struct {
   struct spinlock lock;
   struct run *freelist;
-} kmem;
+  char lockname[8];
+} kmems[NCPU];
 
 void
 kinit()
 {
-  initlock(&kmem.lock, "kmem");
+  for(int i=0;i<NCPU;i++){
+    snprintf(kmems[i].lockname, 8, "keme_%d", i);
+    initlock(&kmems[i].lock, kmems[i].lockname);
+  }
   freerange(end, (void*)PHYSTOP);
 }
 
@@ -56,10 +60,51 @@ kfree(void *pa)
 
   r = (struct run*)pa;
 
-  acquire(&kmem.lock);
-  r->next = kmem.freelist;
-  kmem.freelist = r;
-  release(&kmem.lock);
+  push_off();
+  int cid = cpuid();
+  pop_off();
+
+  acquire(&kmems[cid].lock);
+  r->next = kmems[cid].freelist;
+  kmems[cid].freelist = r;
+  release(&kmems[cid].lock);
+}
+
+// For steal free list (lab 8-1)
+struct run* steal(int cid){
+  int ncid = cid;
+  struct run* head, *fast, *slow;
+  push_off();
+  // 传入的cid与当前运行的cpu不是一个
+  if(cid != cpuid())
+    panic("steal");
+  pop_off();
+  for(int i=1;i<NCPU;i++){
+    if(++ncid == NCPU)
+      ncid = 0;
+    acquire(&kmems[ncid].lock);
+    if(kmems[ncid].freelist){
+      // 从当前cpu的空闲链表中偷一半
+      // 采用快慢指针的方式
+      head = slow = kmems[ncid].freelist;
+      fast = slow->next;
+      while(fast){
+        fast = fast->next;
+        if(fast){
+          slow = fast;
+          fast = slow->next;
+        }
+      }
+      // 后一半留给找到的有空闲的cpu
+      kmems[ncid].freelist = slow->next;
+      // 前一半以head为头，作为返回值
+      release(&kmems[ncid].lock);
+      slow->next = 0;
+      return head;
+    }
+    release(&kmems[ncid].lock);
+  }
+  return 0;
 }
 
 // Allocate one 4096-byte page of physical memory.
@@ -69,12 +114,17 @@ void *
 kalloc(void)
 {
   struct run *r;
-
-  acquire(&kmem.lock);
-  r = kmem.freelist;
+  push_off();
+  int cid = cpuid();
+  pop_off();
+  acquire(&kmems[cid].lock);
+  r = kmems[cid].freelist;
   if(r)
-    kmem.freelist = r->next;
-  release(&kmem.lock);
+    kmems[cid].freelist = r->next;
+  if(!r&&(r = steal(cid))){
+    kmems[cid].freelist = r->next;
+  }
+  release(&kmems[cid].lock);
 
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
